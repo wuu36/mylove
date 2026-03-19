@@ -281,7 +281,7 @@ def compare_documents(pdf_path: str, docx_path: str, output_dir: str = "diff_out
 
 
 def compare_text_content(pdf_path1: str, pdf_path2: str) -> dict:
-    """比较两个PDF的文本内容匹配率
+    """比较两个PDF的文本内容匹配率（基于位置匹配）
 
     Returns:
         dict: {
@@ -294,7 +294,7 @@ def compare_text_content(pdf_path1: str, pdf_path2: str) -> dict:
     """
     import fitz
 
-    def extract_all_text(pdf_path):
+    def extract_texts_with_positions(pdf_path):
         doc = fitz.open(pdf_path)
         texts = []
         for page in doc:
@@ -305,34 +305,63 @@ def compare_text_content(pdf_path1: str, pdf_path2: str) -> dict:
                         for span in line.get('spans', []):
                             text = span.get('text', '').strip()
                             if text:
-                                texts.append(text)
+                                bbox = span.get('bbox', (0,0,0,0))
+                                texts.append({
+                                    'text': text,
+                                    'x': bbox[0],
+                                    'y': bbox[1]
+                                })
         doc.close()
         return texts
 
-    texts1 = extract_all_text(pdf_path1)
-    texts2 = extract_all_text(pdf_path2)
+    texts1 = extract_texts_with_positions(pdf_path1)
+    texts2 = extract_texts_with_positions(pdf_path2)
 
-    # 计算匹配率
-    set1 = set(texts1)
-    set2 = set(texts2)
+    # 基于位置的文本匹配（类似布局匹配）
+    used_indices = set()
+    matched_count = 0
+    missing_texts = []
 
-    matched = set1 & set2
-    missing = set1 - set2  # 原文有但生成文档没有
-    extra = set2 - set1    # 生成文档有但原文没有
+    for t1 in texts1:
+        # 找最近的相同文本
+        best_idx = -1
+        best_dist = float('inf')
+        for i, t2 in enumerate(texts2):
+            if i not in used_indices and t1['text'] == t2['text']:
+                dist = abs(t1['y'] - t2['y']) + abs(t1['x'] - t2['x']) * 0.1
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
 
-    total_chars = sum(len(t) for t in texts1)
-    matched_chars = sum(len(t) for t in matched if t in texts1)
+        if best_idx >= 0:
+            used_indices.add(best_idx)
+            matched_count += 1
+        else:
+            missing_texts.append(t1['text'])
 
-    text_match_rate = matched_chars / total_chars if total_chars > 0 else 0
+    # 计算多余文本
+    extra_texts = [texts2[i]['text'] for i in range(len(texts2)) if i not in used_indices]
+
+    total_chars = sum(len(t['text']) for t in texts1)
+    matched_chars = sum(len(t['text']) for t in texts1[:matched_count]) if matched_count > 0 else 0
+
+    # 更准确的字符匹配计算：每个匹配的文本块贡献其字符数
+    matched_chars = sum(len(texts1[i]['text']) for i in range(len(texts1)) if
+                        any(texts1[i]['text'] == texts2[j]['text'] for j in used_indices))
+
+    # 简化：匹配的文本块数 * 平均字符数
+    matched_chars = sum(len(t['text']) for t in texts1[:matched_count])
+
+    text_match_rate = matched_count / len(texts1) if texts1 else 0
 
     return {
         'text_match_rate': text_match_rate,
         'total_chars': total_chars,
         'matched_chars': matched_chars,
-        'missing_texts': sorted(list(missing))[:20],  # 最多显示20个
-        'extra_texts': sorted(list(extra))[:20],
+        'missing_texts': sorted(list(set(missing_texts)))[:20],
+        'extra_texts': sorted(list(set(extra_texts)))[:20],
         'total_text_blocks': len(texts1),
-        'matched_text_blocks': len(matched),
+        'matched_text_blocks': matched_count,
     }
 
 
@@ -381,32 +410,44 @@ def compare_layout_positions(pdf_path1: str, pdf_path2: str, tolerance: float = 
     pos1 = extract_positions(pdf_path1)
     pos2 = extract_positions(pdf_path2)
 
-    # 按文本匹配位置
+    # 改进的匹配算法：为每个原文文本找最近的相同文本
     matched_positions = []
     x_offsets = []
     y_offsets = []
+    used_indices = set()  # 记录已使用的生成文本索引
 
     for p1 in pos1:
-        # 找相同文本的位置
-        for p2 in pos2:
-            if p1['text'] == p2['text']:
-                x_off = p2['x'] - p1['x']
-                y_off = p2['y'] - p1['y']
+        # 找相同文本且位置最近的
+        best_match_idx = -1
+        best_dist = float('inf')
 
-                matched_positions.append({
-                    'text': p1['text'][:20],
-                    'orig_x': p1['x'],
-                    'orig_y': p1['y'],
-                    'gen_x': p2['x'],
-                    'gen_y': p2['y'],
-                    'x_offset': x_off,
-                    'y_offset': y_off,
-                    'in_tolerance': abs(x_off) <= tolerance and abs(y_off) <= tolerance
-                })
+        for i, p2 in enumerate(pos2):
+            if i not in used_indices and p1['text'] == p2['text']:
+                # 计算距离（优先Y距离，因为同一行内顺序可能不同）
+                dist = abs(p1['y'] - p2['y']) + abs(p1['x'] - p2['x']) * 0.1
+                if dist < best_dist:
+                    best_dist = dist
+                    best_match_idx = i
 
-                x_offsets.append(x_off)
-                y_offsets.append(y_off)
-                break
+        if best_match_idx >= 0:
+            used_indices.add(best_match_idx)
+            p2 = pos2[best_match_idx]
+            x_off = p2['x'] - p1['x']
+            y_off = p2['y'] - p1['y']
+
+            matched_positions.append({
+                'text': p1['text'][:20],
+                'orig_x': p1['x'],
+                'orig_y': p1['y'],
+                'gen_x': p2['x'],
+                'gen_y': p2['y'],
+                'x_offset': x_off,
+                'y_offset': y_off,
+                'in_tolerance': abs(x_off) <= tolerance and abs(y_off) <= tolerance
+            })
+
+            x_offsets.append(x_off)
+            y_offsets.append(y_off)
 
     # 计算指标
     in_tolerance_count = sum(1 for p in matched_positions if p['in_tolerance'])
