@@ -1,0 +1,13 @@
+# Word temporary files
+~$*.docx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Archived versions (keep in local, not in git)
+archived_versions/
+
+# Locked temp file
+OC-D P241210003_v8.docx
