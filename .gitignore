@@ -11,3 +11,24 @@ archived_versions/
 
 # Locked temp file
 OC-D P241210003_v8.docx
+
+# Claude Code
+.claude/
+
+# Diff output images
+diff_output/*_page_1.png
+diff_output/物质名录*.xlsx
+
+# Temporary files
+temp_excel_data.txt
+test_translation.txt
+test_small.xlsx
+
+# Copy of file
+物质名录_en - 副本.xlsx
+
+# Logo
+logo_hd.png
+
+# Documentation
+visual_compare.md
